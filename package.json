@@ -1,0 +1,26 @@
+{
+  "name": "xl-extension",
+  "displayName": "XL Extension",
+  "description": "Visual element capture for test automation",
+  "version": "1.0.0",
+  "publisher": "Alpha-Centauri-00",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript"
+  ],
+  "main": "./src/x-ten.js",
+  "scripts": {
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.108.1",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
