@@ -1,6 +1,6 @@
 // ============================================================================
-// FILE: xl_extension/src/extension.js
 // Hover over variable names to see element screenshots
+// Support for Python, JavaScript, TypeScript, and Robot Framework
 // ============================================================================
 
 const vscode = require('vscode');
@@ -8,10 +8,10 @@ const fs = require('fs');
 const path = require('path');
 
 function activate(context) {
-  console.log('✅ XL Extension activated!');
+  console.log('XL Extension activated!');
 
   const hoverProvider = vscode.languages.registerHoverProvider(
-    ['python', 'javascript', 'typescript'],
+    ['python', 'javascript', 'typescript', 'robotframework'],
     new ElementHoverProvider()
   );
 
@@ -24,7 +24,13 @@ class ElementHoverProvider {
     this.metadataCache = null;
     this.metadataCachePath = null;
     this.lastCacheTime = 0;
-    this.cacheTimeout = 5000; // 5 seconds
+    this.cacheTimeout = 5000;
+    
+    // Cache variable assignments to avoid rescanning
+    this.variableAssignmentCache = {};
+    this.variableAssignmentCachePath = null;
+    this.variableAssignmentCacheTime = 0;
+    this.variableAssignmentCacheTimeout = 5000;
   }
 
   // Load metadata from file with caching
@@ -61,7 +67,28 @@ class ElementHoverProvider {
 
   // Get variable name at cursor position
   getVariableAtPosition(document, position) {
-    // Get the word at cursor position
+    const line = document.lineAt(position.line).text;
+    const character = position.character;
+
+    // detect ${VARIABLE} syntax
+    if (document.languageId === 'robotframework') {
+      // Check if cursor is inside ${}
+      const robotVarRegex = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+      let match;
+      
+      while ((match = robotVarRegex.exec(line)) !== null) {
+        const varStart = match.index;
+        const varEnd = match.index + match[0].length;
+        
+        // Check if cursor is within this variable
+        if (character >= varStart && character <= varEnd) {
+          return match[1]; // Return just the variable name without ${}
+        }
+      }
+      return null;
+    }
+
+    // For Python, JavaScript, TypeScript: use word boundary detection
     const range = document.getWordRangeAtPosition(position);
     if (!range) return null;
 
@@ -75,12 +102,9 @@ class ElementHoverProvider {
     return word;
   }
 
-  // Extract the value assigned to a variable
+  // Extract the value assigned to a variable (Python/JS/TS style)
   extractVariableValue(line, variableName) {
-    // Extract the value assigned to a variable from a line
     // Handles: var = "value" or var = 'value' or var = `value`
-    
-    // Create regex to find: variableName = "..." or variableName = '...' or variableName = `...`
     const doubleQuoteRegex = new RegExp(`${variableName}\\s*=\\s*"([^"]*)"`);
     const singleQuoteRegex = new RegExp(`${variableName}\\s*=\\s*'([^']*)'`);
     const backQuoteRegex = new RegExp(`${variableName}\\s*=\\s*\\\`([^\\\`]*)\\\``);
@@ -97,21 +121,79 @@ class ElementHoverProvider {
     return null;
   }
 
-  // Find variable assignment in the entire document
-  findVariableAssignment(document, variableName) {
-    try {
-      // Search backwards from current position through the document
-      for (let i = 0; i < document.lineCount; i++) {
-        const line = document.lineAt(i).text;
-        const value = this.extractVariableValue(line, variableName);
-        if (value) {
-          return value;
+  // Extract Robot Framework variable value
+  // Handles: ${VAR_NAME}    //xpath or ${VAR_NAME}    .css-selector
+  extractRobotVariableValue(line, variableName) {
+    const robotVarRegex = new RegExp(`\\$\\{${variableName}\\}\\s+(.+?)$`);
+    
+    const match = line.match(robotVarRegex);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+
+    return null;
+  }
+
+  // Build variable assignment cache for better performance on large files
+  buildVariableAssignmentCache(document) {
+    const now = Date.now();
+    
+    // Return cached results if still fresh
+    if (this.variableAssignmentCache && 
+        this.variableAssignmentCachePath === document.uri.fsPath && 
+        now - this.variableAssignmentCacheTime < this.variableAssignmentCacheTimeout) {
+      return this.variableAssignmentCache;
+    }
+
+    // Build cache by scanning document once
+    this.variableAssignmentCache = {};
+    const isRobot = document.languageId === 'robotframework';
+
+    for (let i = 0; i < document.lineCount; i++) {
+      const line = document.lineAt(i).text;
+      
+      if (isRobot) {
+        // Robot Framework: find all ${VAR} definitions
+        const varRegex = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+        let match;
+        while ((match = varRegex.exec(line)) !== null) {
+          const varName = match[1];
+          // Only process if we haven't found this variable yet
+          if (!this.variableAssignmentCache[varName]) {
+            const value = this.extractRobotVariableValue(line, varName);
+            if (value) {
+              this.variableAssignmentCache[varName] = value;
+            }
+          }
+        }
+      } else {
+        // Python/JS/TS: find all variable assignments
+        const assignmentRegex = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
+        let match;
+        while ((match = assignmentRegex.exec(line)) !== null) {
+          const varName = match[1];
+          // Only process if we haven't found this variable yet
+          if (!this.variableAssignmentCache[varName]) {
+            const value = this.extractVariableValue(line, varName);
+            if (value) {
+              this.variableAssignmentCache[varName] = value;
+            }
+          }
         }
       }
-    } catch (error) {
-      // Silently fail if document access fails
     }
-    return null;
+
+    // Cache the results
+    this.variableAssignmentCachePath = document.uri.fsPath;
+    this.variableAssignmentCacheTime = now;
+
+    return this.variableAssignmentCache;
+  }
+
+  // Find variable assignment efficiently using cache
+  findVariableAssignmentEfficient(document, variableName) {
+    const cache = this.buildVariableAssignmentCache(document);
+    return cache[variableName] || null;
   }
 
   // Main hover provider
@@ -123,7 +205,6 @@ class ElementHoverProvider {
         return null;
       }
 
-      // Try to find screenshot for this variable
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
         return null;
@@ -149,14 +230,8 @@ class ElementHoverProvider {
       }
 
       // Validate that the variable's actual value matches the metadata
-      // First, try to find the assignment on the current line
-      const line = document.lineAt(position.line).text;
-      let actualValue = this.extractVariableValue(line, variableName);
-      
-      // If not on current line, search the entire document
-      if (!actualValue) {
-        actualValue = this.findVariableAssignment(document, variableName);
-      }
+      // Use efficient cache-based lookup
+      const actualValue = this.findVariableAssignmentEfficient(document, variableName);
       
       // Only show photo if we found a matching value
       if (!actualValue) {
@@ -183,8 +258,7 @@ class ElementHoverProvider {
       const imageUriString = imageUri.toString();
 
       const markdown = new vscode.MarkdownString();
-      // markdown.appendMarkdown(`![Element](${imageUriString})\n\n`);
-      markdown.appendMarkdown(`![Element](${imageUriString}|width=400,height=250)\n\n`);
+      markdown.appendMarkdown(`![Element](${imageUriString}|width=400)\n\n`);
       markdown.appendMarkdown(`**Tag**: \`${element.tag}\`\n\n`);
 
       if (element.text) {
