@@ -184,7 +184,7 @@ class ElementHoverProvider {
 
       const markdown = new vscode.MarkdownString();
       // markdown.appendMarkdown(`![Element](${imageUriString})\n\n`);
-      markdown.appendMarkdown(`![Element](${imageUriString}|width=400,height=250)\n\n`);
+      markdown.appendMarkdown(`![Element](${imageUriString}|width=400)\n\n`);
       markdown.appendMarkdown(`**Tag**: \`${element.tag}\`\n\n`);
 
       if (element.text) {
